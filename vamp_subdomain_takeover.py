@@ -755,7 +755,92 @@ def _parse_args() -> argparse.Namespace:
                       help="Peticiones paralelas (default: 30)")
     perf.add_argument("--http-timeout",    type=int, default=12, metavar="SEG",
                       help="Timeout HTTP en segundos (default: 12)")
+
+    # Argumentos de informe unificado VSL (--client, --engagement, --auditor,
+    # --report-scope, --report-html, --report-pdf)
+    from vampsec_report import add_report_args
+    add_report_args(p)
+
     return p.parse_args()
+
+
+# =============================================================================
+# CONVERSOR A FORMATO DE INFORME UNIFICADO VSL
+# =============================================================================
+
+def _findings_vsl(results: List["SubdomainResult"], domain: str) -> list:
+    """
+    Convierte los resultados del escáner de takeover al formato Finding unificado
+    de VampSecure Labs.
+
+    Solo se incluyen subdominios con estado VULNERABLE (CRITICAL) o POTENTIAL (HIGH).
+    Los subdominios SAFE y ERROR se omiten del informe de cliente.
+
+    Parámetros
+    ----------
+    results : List[SubdomainResult]  — Lista de resultados del escáner
+    domain  : str                    — Dominio raíz auditado
+
+    Retorna
+    -------
+    List[Finding]  — Lista de hallazgos en formato VSL con prefijo SDT-NNN
+    """
+    from vampsec_report import Finding as VSLFinding
+
+    ESTADOS_INCLUIDOS = {TakeoverStatus.VULNERABLE, TakeoverStatus.POTENTIAL}
+    hallazgos: list = []
+    n = 0
+
+    for r in sorted(results, key=lambda x: (0 if x.status == TakeoverStatus.VULNERABLE else 1, x.subdomain)):
+        if r.status not in ESTADOS_INCLUIDOS:
+            continue
+        n += 1
+
+        # Severidad según nivel de confirmación
+        severidad = "CRITICAL" if r.status == TakeoverStatus.VULNERABLE else "HIGH"
+
+        # Cadena CNAME para la evidencia
+        cname_str = " → ".join(r.cname_chain) if r.cname_chain else "—"
+
+        partes_evidencia = [
+            f"Estado: {r.status.value}",
+            f"CNAME chain: {cname_str}",
+        ]
+        if r.service:
+            partes_evidencia.append(f"Servicio: {r.service}")
+        if r.http_status is not None:
+            partes_evidencia.append(f"HTTP: {r.http_status}")
+        if r.fingerprint_found:
+            partes_evidencia.append("Fingerprint de takeover CONFIRMADO")
+        if r.cvss:
+            partes_evidencia.append(f"CVSS estimado: {r.cvss}")
+
+        servicio_txt = r.service or "servicio externo"
+        hallazgos.append(VSLFinding(
+            id          = f"SDT-{n:03d}",
+            title       = (
+                f"Subdomain Takeover {'confirmado' if r.status == TakeoverStatus.VULNERABLE else 'potencial'}"
+                f" — {r.subdomain}"
+            ),
+            severity    = severidad,
+            description = (
+                f"El subdominio '{r.subdomain}' (dominio raíz: {domain}) tiene un registro CNAME "
+                f"apuntando a {cname_str} ({servicio_txt}) cuyo recurso no está reclamado. "
+                "Un atacante puede registrar el recurso en el servicio destino y servir contenido "
+                "bajo el dominio legítimo de la organización."
+            ),
+            evidence    = " | ".join(partes_evidencia),
+            affected    = r.subdomain,
+            remediation = (
+                f"Opción A: Eliminar el registro CNAME de '{r.subdomain}' si el subdominio ya no se usa. "
+                f"Opción B: Reclamar o renovar el recurso en {servicio_txt} para que el CNAME "
+                "apunte a un recurso activo y controlado por la organización."
+            ),
+            cvss        = float(r.cvss) if r.cvss else None,
+            tags        = ["dns", "subdomain-takeover", r.status.value.lower()],
+        ))
+
+    return hallazgos
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -830,6 +915,18 @@ async def main() -> None:
         _export_json(results, args.output)
     if args.html:
         _export_html(results, args.domain, args.html)
+
+    # ── Informe unificado VSL (cliente) ───────────────────────────────────────
+    if getattr(args, "report_html", None) or getattr(args, "report_pdf", None):
+        from vampsec_report import VampSecReport, meta_from_args
+        meta   = meta_from_args(args, tool="vamp-subdomain-takeover", version=VERSION)
+        report = VampSecReport(meta=meta, findings=_findings_vsl(results, args.domain))
+        if args.report_html:
+            report.to_html_client(args.report_html)
+            console.print(f"  [bold green]✔ Informe cliente HTML guardado: {args.report_html}[/]")
+        if args.report_pdf:
+            report.to_pdf(args.report_pdf)
+            console.print(f"  [bold green]✔ Informe cliente PDF guardado: {args.report_pdf}[/]")
 
     if n_vuln > 0:
         sys.exit(2)   # exit code 2 = hallazgos críticos (útil en CI/CD)
