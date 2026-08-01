@@ -763,9 +763,10 @@ def _parse_args() -> argparse.Namespace:
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def main() -> None:
+    console.print(BANNER, style="bold magenta")
+
     args = _parse_args()
 
-    console.print(BANNER, style="bold green")
     console.print(f"  Objetivo: [cyan]{args.domain}[/]  ·  "
                   f"Concurrencia: [yellow]{args.concurrency}[/]  ·  "
                   f"Timeout HTTP: [yellow]{args.http_timeout}s[/]\n")
