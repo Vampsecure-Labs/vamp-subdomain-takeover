@@ -1,0 +1,26 @@
+# Entorno virtual
+.venv/
+venv/
+env/
+
+# Compilados Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Datos sensibles
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+scope.txt
+*.rotated-secrets.txt
+
+# Salidas de la herramienta
+*.json
+*.html
+!requirements.txt
+
+# macOS
+.DS_Store
