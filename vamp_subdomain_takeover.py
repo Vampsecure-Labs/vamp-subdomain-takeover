@@ -98,7 +98,7 @@ except ImportError:
 # Constantes
 # ─────────────────────────────────────────────────────────────────────────────
 
-VERSION   = "1.1"
+VERSION   = "1.2"
 TOOL_NAME = "vamp-subdomain-takeover"
 
 BANNER = r"""
@@ -149,6 +149,7 @@ SERVICE_SIGNATURES: Dict[str, Dict[str, str]] = {
     "cargocollective.com":  {"name": "Cargo Collective",   "fingerprint": "404 Not Found",                              "cvss": "7.0"},
     # CDN
     "fastly.net":           {"name": "Fastly CDN",         "fingerprint": "Fastly error: unknown domain",               "cvss": "8.0"},
+    "cloudfront.net":       {"name": "AWS CloudFront",     "fingerprint": "ERROR: The request could not be satisfied",  "cvss": "8.5"},
     "pantheonsite.io":      {"name": "Pantheon",           "fingerprint": "The gods are wise, but they do not know",    "cvss": "7.5"},
     "getpantheon.com":      {"name": "Pantheon",           "fingerprint": "The gods are wise, but they do not know",    "cvss": "7.5"},
     # Ecommerce
@@ -361,9 +362,11 @@ class TakeoverScanner:
 
     UA = f"VampSecureLabs-SubdomainTakeover/{VERSION}"
 
-    def __init__(self, concurrency: int = 30, http_timeout: int = 12) -> None:
-        self.sem         = asyncio.Semaphore(concurrency)
+    def __init__(self, concurrency: int = 30, http_timeout: int = 12, verify: bool = True) -> None:
+        self.sem          = asyncio.Semaphore(concurrency)
         self.http_timeout = aiohttp.ClientTimeout(total=http_timeout)
+        # Si verify=False se omite la verificación HTTP activa (solo análisis DNS pasivo)
+        self.verify       = verify
 
     # ── DNS ──────────────────────────────────────────────────────────────────
 
@@ -479,6 +482,11 @@ class TakeoverScanner:
             result.service_key = service_key
             result.service     = service_name
             result.cvss        = SERVICE_SIGNATURES[service_key]["cvss"]
+
+            if not self.verify:
+                # Con --no-verify: clasificar como POTENTIAL sin realizar peticiones HTTP
+                result.status = TakeoverStatus.POTENTIAL
+                return result
 
             # Fase 3a — Verificación HTTP con aiohttp (fingerprint de servicio específico)
             http_status, fingerprint_found = await self._verify_http(
@@ -608,11 +616,14 @@ class TakeoverScanner:
     _TAKEOVER_FINGERPRINTS: List[str] = [
         "There isn't a GitHub Pages site here",
         "No such app",
+        "Application error",                          # Heroku: app caída pero nombre libre
         "herokucdn.com/error-pages/no-such-app.html",
         "NoSuchBucket",
+        "The specified bucket does not exist",         # AWS S3: bucket eliminado
         "Not Found - Request ID",
         "Microsoft Azure - 404 Web Site Not Found",
         "404 Web Site not found",
+        "ERROR: The request could not be satisfied",   # AWS CloudFront: distribución no reclamada
         "Sorry, this shop is currently unavailable",
         "The deployment could not be found",
         "project not found",
@@ -963,6 +974,9 @@ def _parse_args() -> argparse.Namespace:
                       help="Peticiones paralelas (default: 30)")
     perf.add_argument("--http-timeout",    type=int, default=12, metavar="SEG",
                       help="Timeout HTTP en segundos (default: 12)")
+    perf.add_argument("--no-verify",       action="store_true", default=False,
+                      help="Omitir verificación HTTP activa; clasificar como POTENTIAL "
+                           "todos los CNAME que apuntan a servicios conocidos (solo análisis DNS).")
 
     # Argumentos de informe unificado VSL (--client, --engagement, --auditor,
     # --report-scope, --report-html, --report-pdf)
@@ -1167,7 +1181,11 @@ async def main() -> None:
 
     # ── Escaneo ───────────────────────────────────────────────────────────────
 
-    scanner = TakeoverScanner(concurrency=args.concurrency, http_timeout=args.http_timeout)
+    scanner = TakeoverScanner(
+        concurrency=args.concurrency,
+        http_timeout=args.http_timeout,
+        verify=not args.no_verify,
+    )
 
     with console.status("[bold green]Escaneando...[/]", spinner="dots"):
         results: List[SubdomainResult] = await scanner.scan(subdomains)

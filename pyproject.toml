@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vamp-subdomain-takeover"
-version = "1.1"
-description = "Subdomain takeover vulnerability scanner for authorized assessments"
+version = "1.2"
+description = "Subdomain takeover vulnerability scanner — automatic CNAME fingerprint verification and --no-verify mode"
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.9"
