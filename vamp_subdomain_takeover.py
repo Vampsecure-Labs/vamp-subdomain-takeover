@@ -98,16 +98,16 @@ except ImportError:
 # Constantes
 # ─────────────────────────────────────────────────────────────────────────────
 
-VERSION   = "1.0"
+VERSION   = "1.1"
 TOOL_NAME = "vamp-subdomain-takeover"
 
 BANNER = r"""
-__   ___   __  __ ___  ___ ___ ___ _   _ ___ ___ _      _   ___ ___ 
+__   ___   __  __ ___  ___ ___ ___ _   _ ___ ___ _      _   ___ ___
 \ \ / /_\ |  \/  | _ \/ __| __/ __| | | | _ \ __| |    /_\ | _ ) __|
  \ V / _ \| |\/| |  _/\__ \ _| (__| |_| |   / _|| |__ / _ \| _ \__ \
   \_/_/ \_\_|  |_|_|  |___/___\___|\___/|_|_\___|____/_/ \_\___/___/
   by Antonio Hernandez "Belky" — VampSecure Studios
-  vamp-subdomain-takeover v1.0 · Subdomain Takeover Vulnerability Scanner
+  vamp-subdomain-takeover v1.1 · Subdomain Takeover Vulnerability Scanner
   ────────────────────────────────────────────────────────────────────────
   USO EXCLUSIVO EN AUDITORÍAS AUTORIZADAS · El uso no autorizado es ilegal
 """
@@ -188,6 +188,11 @@ class SubdomainResult:
     http_status:  Optional[int]      = None
     fingerprint_found: bool          = False
     error:        Optional[str]      = None
+    # v1.1: hallazgos NS/MX takeover
+    ns_issues:    List[str]          = field(default_factory=list)
+    mx_issues:    List[str]          = field(default_factory=list)
+    # v1.1: fingerprint de servicio no reclamado confirmado vía urllib.request
+    takeover_confirmed_body: bool    = False
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -434,11 +439,26 @@ class TakeoverScanner:
         subdomain: str,
         session: aiohttp.ClientSession,
     ) -> SubdomainResult:
-        """Ejecuta las 3 fases para un subdominio."""
+        """
+        Ejecuta las fases de análisis para un subdominio.
+
+        Fases ejecutadas (v1.1):
+          2a — Resolución CNAME + fingerprinting de servicio
+          2b — NS takeover check (ns_issues)
+          2c — MX takeover check (mx_issues)
+          3  — Verificación HTTP fingerprint (aiohttp + urllib.request)
+        """
         async with self.sem:
             result = SubdomainResult(subdomain=subdomain)
 
-            # Fase 2 — DNS + fingerprinting de servicio
+            # Fases 2b y 2c: NS/MX takeover checks (en paralelo con CNAME)
+            await asyncio.gather(
+                self._check_ns_takeover(subdomain, result),
+                self._check_mx_takeover(subdomain, result),
+                return_exceptions=True,
+            )
+
+            # Fase 2a — DNS CNAME + fingerprinting de servicio
             try:
                 chain = await self._resolve_cname_chain(subdomain)
             except Exception as exc:
@@ -448,7 +468,8 @@ class TakeoverScanner:
 
             result.cname_chain = chain
             if not chain:
-                return result  # Sin CNAME → SAFE
+                # Sin CNAME → SAFE para takeover CNAME, pero puede tener NS/MX issues
+                return result
 
             match = self._match_service(chain)
             if not match:
@@ -459,7 +480,7 @@ class TakeoverScanner:
             result.service     = service_name
             result.cvss        = SERVICE_SIGNATURES[service_key]["cvss"]
 
-            # Fase 3 — Verificación HTTP
+            # Fase 3a — Verificación HTTP con aiohttp (fingerprint de servicio específico)
             http_status, fingerprint_found = await self._verify_http(
                 subdomain, service_key, session
             )
@@ -473,7 +494,194 @@ class TakeoverScanner:
             else:
                 result.status = TakeoverStatus.POTENTIAL if http_status >= 400 else TakeoverStatus.SAFE
 
+            # Fase 3b — Verificación adicional con fingerprints genéricos (urllib.request)
+            # Solo si el CNAME apunta a un servicio cloud conocido y aún no está confirmado
+            if result.status in (TakeoverStatus.POTENTIAL, TakeoverStatus.SAFE):
+                await self._verify_takeover_fingerprints(subdomain, result)
+
             return result
+
+    # ── NS takeover checks (v1.1) ─────────────────────────────────────────
+
+    # Patrones de nameservers de registradores cloud conocidos
+    _NS_CLOUD_PATTERNS = ["awsdns", "azure-dns.com", "googledomains.com", "ns.cloudflare.com"]
+    # SaaS de correo que permiten reclamar dominios
+    _MX_SAAS_PATTERNS  = ["mailchimp", "sendgrid", "mailgun", "sparkpost", "mandrillapp"]
+
+    async def _check_ns_takeover(
+        self,
+        domain: str,
+        result: SubdomainResult,
+    ) -> None:
+        """
+        Consulta los registros NS del subdominio y detecta posibles NS takeover.
+
+        Verifica dos condiciones:
+          1. NS apunta a un dominio que devuelve NXDOMAIN (nameserver no registrado).
+          2. NS usa un proveedor cloud conocido (AWS Route53, Azure, GCP).
+
+        Los hallazgos se acumulan en result.ns_issues.
+        """
+        resolver = dns.asyncresolver.Resolver()
+        resolver.timeout  = self.DNS_TIMEOUT
+        resolver.lifetime = self.DNS_TIMEOUT
+
+        try:
+            answer = await resolver.resolve(domain, "NS")
+            ns_records = [str(rr.target).rstrip(".") for rr in answer]
+        except (dns.exception.DNSException, Exception):
+            return   # Sin registros NS o error: no hay nada que analizar
+
+        for ns in ns_records:
+            ns_lower = ns.lower()
+
+            # Detectar proveedor cloud conocido
+            for patron in self._NS_CLOUD_PATTERNS:
+                if patron in ns_lower:
+                    result.ns_issues.append(
+                        f"NS usa proveedor cloud ({patron}): {ns}"
+                    )
+                    break
+
+            # Verificar si el dominio del NS resuelve (detectar NS takeover)
+            try:
+                await resolver.resolve(ns, "A")
+            except dns.resolver.NXDOMAIN:
+                result.ns_issues.append(
+                    f"HIGH: NS takeover potencial — nameserver apunta a dominio "
+                    f"no registrado: {ns}"
+                )
+            except (dns.exception.DNSException, Exception):
+                pass   # Error de red u otro: no concluyente
+
+    async def _check_mx_takeover(
+        self,
+        domain: str,
+        result: SubdomainResult,
+    ) -> None:
+        """
+        Consulta los registros MX del subdominio y detecta posibles MX takeover.
+
+        Verifica dos condiciones:
+          1. El dominio del servidor MX no resuelve (NXDOMAIN → MX takeover).
+          2. El MX apunta a un SaaS de correo que permite reclamar dominios
+             (Mailchimp, SendGrid, etc.).
+
+        Los hallazgos se acumulan en result.mx_issues.
+        """
+        resolver = dns.asyncresolver.Resolver()
+        resolver.timeout  = self.DNS_TIMEOUT
+        resolver.lifetime = self.DNS_TIMEOUT
+
+        try:
+            answer = await resolver.resolve(domain, "MX")
+            mx_records = [str(rr.exchange).rstrip(".") for rr in answer]
+        except (dns.exception.DNSException, Exception):
+            return   # Sin registros MX o error
+
+        for mx in mx_records:
+            mx_lower = mx.lower()
+
+            # Detectar SaaS de correo con posibilidad de reclamación
+            for patron in self._MX_SAAS_PATTERNS:
+                if patron in mx_lower:
+                    result.mx_issues.append(
+                        f"MEDIUM: MX apunta a proveedor SaaS ({patron}) — "
+                        f"verificar ownership del dominio: {mx}"
+                    )
+                    break
+
+            # Verificar si el dominio del MX resuelve
+            try:
+                await resolver.resolve(mx, "A")
+            except dns.resolver.NXDOMAIN:
+                result.mx_issues.append(
+                    f"HIGH: MX takeover potencial — servidor de correo apunta a "
+                    f"dominio no registrado: {mx}"
+                )
+            except (dns.exception.DNSException, Exception):
+                pass   # Error de red: no concluyente
+
+    # ── Verificación de fingerprints de takeover con urllib.request (v1.1) ──
+
+    # Fingerprints de "endpoint no reclamado" por servicio
+    _TAKEOVER_FINGERPRINTS: List[str] = [
+        "There isn't a GitHub Pages site here",
+        "No such app",
+        "herokucdn.com/error-pages/no-such-app.html",
+        "NoSuchBucket",
+        "Not Found - Request ID",
+        "Microsoft Azure - 404 Web Site Not Found",
+        "404 Web Site not found",
+        "Sorry, this shop is currently unavailable",
+        "The deployment could not be found",
+        "project not found",
+        "Repository not found",
+        "Page Not Found",
+        "Fastly error: unknown domain",
+        "There is no helpdesk here",
+        "Help Center Closed",
+        "unknown to Read the Docs",
+        "The gods are wise, but they do not know",
+        "Do you want to register",
+        "Project doesnt exist",
+    ]
+
+    async def _verify_takeover_fingerprints(
+        self,
+        subdomain: str,
+        result: SubdomainResult,
+    ) -> None:
+        """
+        Verificación pasiva de takeover para subdominios con CNAME a servicios cloud.
+
+        Realiza GET al subdominio con urllib.request (timeout 10 s) y busca
+        fingerprints de "dominio/endpoint no reclamado" en el cuerpo de respuesta.
+
+        Si coincide algún fingerprint, marca result.takeover_confirmed_body = True
+        y establece result.status = VULNERABLE (CRITICAL).
+
+        Se ejecuta como tarea bloqueante en un ThreadPoolExecutor para no
+        bloquear el bucle asyncio.
+        """
+        import urllib.request as _ureq
+        import urllib.error  as _uerr
+
+        def _fetch_blocking(url: str) -> str:
+            """Descarga el cuerpo del subdominio de forma bloqueante."""
+            try:
+                req = _ureq.Request(
+                    url,
+                    headers={"User-Agent": self.UA},
+                )
+                with _ureq.urlopen(req, timeout=10) as resp:
+                    raw = resp.read(32768)   # Leer hasta 32 KB
+                    return raw.decode("utf-8", errors="replace")
+            except (_uerr.URLError, Exception):
+                return ""
+
+        body = ""
+        for scheme in ("https", "http"):
+            url = f"{scheme}://{subdomain}"
+            try:
+                body = await asyncio.get_event_loop().run_in_executor(
+                    None, _fetch_blocking, url
+                )
+            except Exception:
+                continue
+            if body:
+                break
+
+        if not body:
+            return
+
+        body_lower = body.lower()
+        for fp in self._TAKEOVER_FINGERPRINTS:
+            if fp.lower() in body_lower:
+                result.takeover_confirmed_body = True
+                result.fingerprint_found       = True
+                result.status                  = TakeoverStatus.VULNERABLE
+                break
 
     async def scan(self, subdomains: Set[str]) -> List[SubdomainResult]:
         """Escanea todos los subdominios en paralelo."""
@@ -839,6 +1047,81 @@ def _findings_vsl(results: List["SubdomainResult"], domain: str) -> list:
             cvss        = float(r.cvss) if r.cvss else None,
             tags        = ["dns", "subdomain-takeover", r.status.value.lower()],
         ))
+
+    # ── Hallazgos NS takeover (v1.1) ──
+    for r in results:
+        if not r.ns_issues:
+            continue
+        for issue in r.ns_issues:
+            if not issue.startswith("HIGH:"):
+                continue   # Solo los HIGH van al informe de cliente
+            n += 1
+            hallazgos.append(VSLFinding(
+                id          = f"SDT-{n:03d}",
+                title       = f"NS Takeover potencial — {r.subdomain}"[:80],
+                severity    = "HIGH",
+                description = (
+                    f"El subdominio '{r.subdomain}' tiene un registro NS que apunta a un nameserver "
+                    "cuyo dominio no está registrado. Un atacante podría registrar ese dominio y "
+                    "tomar el control del servicio de nombres del subdominio."
+                ),
+                evidence    = (
+                    f"Subdominio: {r.subdomain}\n"
+                    f"Hallazgo NS: {issue}\n"
+                    f"Fuente: DNS pasivo (no se envió tráfico al objetivo)"
+                ),
+                affected    = r.subdomain,
+                remediation = (
+                    f"Eliminar el registro NS de '{r.subdomain}' si el nameserver ya no existe, "
+                    "o actualizar el NS a un nameserver válido y controlado por la organización."
+                ),
+                tags        = ["dns", "ns-takeover", "subdomain"],
+            ))
+
+    # ── Hallazgos MX takeover (v1.1) ──
+    for r in results:
+        if not r.mx_issues:
+            continue
+        for issue in r.mx_issues:
+            sev = "HIGH" if issue.startswith("HIGH:") else "MEDIUM"
+            n += 1
+            if issue.startswith("HIGH:"):
+                titulo   = f"MX Takeover potencial — {r.subdomain}"[:80]
+                desc     = (
+                    f"El subdominio '{r.subdomain}' tiene un registro MX que apunta a un servidor "
+                    "de correo cuyo dominio no está registrado. Un atacante podría registrar ese "
+                    "dominio e interceptar correos dirigidos a este subdominio."
+                )
+                remedio  = (
+                    f"Eliminar o actualizar el registro MX de '{r.subdomain}' para apuntar a "
+                    "un servidor de correo válido y controlado por la organización."
+                )
+            else:
+                titulo   = f"MX apunta a proveedor SaaS — verificar ownership — {r.subdomain}"[:80]
+                desc     = (
+                    f"El subdominio '{r.subdomain}' tiene un registro MX apuntando a un proveedor "
+                    "SaaS de correo que permite reclamar dominios. Si la cuenta en ese proveedor "
+                    "ya no está activa, un atacante podría reclamarla."
+                )
+                remedio  = (
+                    f"Verificar que la cuenta del proveedor SaaS asociada a '{r.subdomain}' sigue "
+                    "activa y es propiedad de la organización. Si no se usa, eliminar el registro MX."
+                )
+
+            hallazgos.append(VSLFinding(
+                id          = f"SDT-{n:03d}",
+                title       = titulo,
+                severity    = sev,
+                description = desc,
+                evidence    = (
+                    f"Subdominio: {r.subdomain}\n"
+                    f"Hallazgo MX: {issue}\n"
+                    f"Fuente: DNS pasivo"
+                ),
+                affected    = r.subdomain,
+                remediation = remedio,
+                tags        = ["dns", "mx-takeover", "email", "subdomain"],
+            ))
 
     return hallazgos
 
