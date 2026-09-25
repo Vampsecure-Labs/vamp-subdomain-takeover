@@ -72,6 +72,7 @@ import asyncio
 import json
 import os
 import sys
+import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -98,7 +99,7 @@ except ImportError:
 # Constantes
 # ─────────────────────────────────────────────────────────────────────────────
 
-VERSION   = "1.2"
+VERSION   = "1.3"
 TOOL_NAME = "vamp-subdomain-takeover"
 
 BANNER = r"""
@@ -935,6 +936,110 @@ def _load_from_file(path: str) -> Set[str]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Modo monitor — polling continuo (v1.3)
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def _ejecutar_scan(args) -> List[dict]:
+    """
+    Ejecuta el scan completo (enumeración + DNS + HTTP) y retorna la lista de
+    resultados como dicts con id, subdomain y severity. Se usa en el modo monitor.
+    """
+    subdomains: Set[str] = set()
+
+    if args.subdomains:
+        subdomains = {s.strip() for s in args.subdomains.split(",") if s.strip()}
+
+    if getattr(args, "from_file", None):
+        loaded = _load_from_file(args.from_file)
+        subdomains.update(loaded)
+
+    if not subdomains:
+        enumerator = SubdomainEnumerator(args.domain)
+        subdomains = await enumerator.enumerate()
+
+    if not subdomains:
+        return []
+
+    scanner = TakeoverScanner(
+        concurrency=args.concurrency,
+        http_timeout=args.http_timeout,
+        verify=not args.no_verify,
+    )
+    results: List[SubdomainResult] = await scanner.scan(subdomains)
+
+    return [
+        {
+            "id":        r.subdomain,
+            "subdomain": r.subdomain,
+            "severity":  r.status.value,
+            "service":   r.service or "",
+        }
+        for r in results
+    ]
+
+
+async def run_monitor_mode(dominio: str, intervalo: int, args) -> None:
+    """
+    Polling continuo de DNS. Detecta nuevos subdominios/cambios de takeover.
+    Persiste el estado entre ciclos en ~/.config/vampsec/takeover-<dominio>.json.
+    Sale con Ctrl+C.
+    """
+    state_file = (
+        Path.home() / ".config" / "vampsec"
+        / f"takeover-{dominio.replace('.', '_')}.json"
+    )
+    state_file.parent.mkdir(parents=True, exist_ok=True)
+
+    # Cargar estado previo (dict {id: hallazgo})
+    estado_prev: dict = {}
+    if state_file.exists():
+        try:
+            estado_prev = json.loads(state_file.read_text())
+        except Exception:
+            pass
+
+    console.print(f"[bold]Modo monitor activo — intervalo {intervalo}s — Ctrl+C para salir[/]")
+
+    while True:
+        try:
+            # Ejecutar el scan completo
+            resultados = await _ejecutar_scan(args)
+
+            # Detectar cambios: nuevos hallazgos o resueltos
+            nuevos    = [h for h in resultados if h["id"] not in estado_prev]
+            resueltos = [h_id for h_id in estado_prev
+                         if h_id not in {h["id"] for h in resultados}]
+
+            if nuevos:
+                console.print(f"[red bold]⚠ {len(nuevos)} nuevo(s) hallazgo(s)[/]")
+                for h in nuevos:
+                    console.print(
+                        f"  [red]+ {h.get('subdomain','?')} → "
+                        f"{h.get('severity','?')} {h.get('id','?')}[/]"
+                    )
+            if resueltos:
+                console.print(f"[green]✔ {len(resueltos)} resuelto(s)[/]")
+            if not nuevos and not resueltos:
+                console.print(f"[dim]Sin cambios — {len(resultados)} subdominios activos[/]")
+
+            # Guardar estado actual
+            estado_prev = {h["id"]: h for h in resultados}
+            state_file.write_text(
+                json.dumps(estado_prev, indent=2, ensure_ascii=False)
+            )
+
+            console.print(
+                f"[dim]Próximo check en {intervalo}s "
+                f"({datetime.now().strftime('%H:%M:%S')})[/]"
+            )
+            await asyncio.sleep(intervalo)
+
+        except KeyboardInterrupt:
+            console.print("[yellow]Monitor detenido.[/]")
+            break
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # CLI
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -977,6 +1082,8 @@ def _parse_args() -> argparse.Namespace:
     perf.add_argument("--no-verify",       action="store_true", default=False,
                       help="Omitir verificación HTTP activa; clasificar como POTENTIAL "
                            "todos los CNAME que apuntan a servicios conocidos (solo análisis DNS).")
+    perf.add_argument("--monitor",         metavar="SEGUNDOS", type=int, default=0,
+                      help="Polling continuo: re-escanear cada N segundos y alertar de cambios")
 
     # Argumentos de informe unificado VSL (--client, --engagement, --auditor,
     # --report-scope, --report-html, --report-pdf)
@@ -1152,6 +1259,11 @@ async def main() -> None:
     console.print(f"  Objetivo: [cyan]{args.domain}[/]  ·  "
                   f"Concurrencia: [yellow]{args.concurrency}[/]  ·  "
                   f"Timeout HTTP: [yellow]{args.http_timeout}s[/]\n")
+
+    # ── Modo monitor continuo ─────────────────────────────────────────────────
+    if args.monitor > 0:
+        await run_monitor_mode(args.domain, args.monitor, args)
+        return
 
     # ── Construir lista de subdominios ────────────────────────────────────────
 
