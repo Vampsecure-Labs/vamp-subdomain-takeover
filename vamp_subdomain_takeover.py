@@ -72,7 +72,6 @@ import asyncio
 import json
 import os
 import sys
-import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -82,7 +81,6 @@ from typing import Dict, List, Optional, Set, Tuple
 
 import aiohttp
 from rich.console import Console
-from rich.live import Live
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
