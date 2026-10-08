@@ -154,6 +154,77 @@ python vamp_subdomain_takeover.py -d example.com \
 
 ---
 
+## Sample Output
+
+```
+$ python vamp_subdomain_takeover.py -d example.com -f subdomains.txt
+vamp-subdomain-takeover v1.1 — VampSecure Labs
+──────────────────────────────────────────────────────────────────────
+[*] Checking 48 subdomains for example.com with concurrency 30...
+
+┌─────────────────────┬────────────────────────────────────┬────────────┬───────────┬──────┐
+│ Subdomain           │ CNAME Chain                        │ Service    │ Status    │ CVSS │
+├─────────────────────┼────────────────────────────────────┼────────────┼───────────┼──────┤
+│ shop.example.com    │ → shop.example.myshopify.com       │ Shopify    │ SAFE      │ —    │
+│ blog.example.com    │ → example.github.io (DANGLING)     │ GitHub Pgs │ VULNERABLE│ 8.1  │
+│ cdn.example.com     │ → example.s3.amazonaws.com (NXDOM) │ AWS S3     │ VULNERABLE│ 9.3  │
+│ staging.example.com │ → example-app.herokuapp.com        │ Heroku     │ POTENTIAL │ 8.8  │
+│ mail.example.com    │ (no CNAME)                         │ —          │ SAFE      │ —    │
+└─────────────────────┴────────────────────────────────────┴────────────┴───────────┴──────┘
+
+Summary: 48 subdomains · 2 VULNERABLE · 1 POTENTIAL · 45 SAFE
+Exit code: 2 — immediate remediation required
+
+VULNERABLE — blog.example.com (GitHub Pages, CVSS 8.1)
+  CNAME: blog.example.com → example.github.io
+  HTTP body: "There isn't a GitHub Pages site here."
+  Remediation: create repo at github.com/example OR remove DNS record
+
+VULNERABLE — cdn.example.com (AWS S3, CVSS 9.3)
+  CNAME: cdn.example.com → example.s3.amazonaws.com
+  DNS: NXDOMAIN — bucket does not exist
+  Remediation: create S3 bucket "example" OR remove DNS record
+```
+
+## Why vamp-subdomain-takeover vs. subjack · nuclei (takeover templates) · can-i-take-over-xyz
+
+| Capability | vamp-subdomain-takeover | subjack | nuclei (takeover) | can-i-take-over-xyz |
+|------------|------------------------|---------|-------------------|---------------------|
+| Async CNAME chain resolution (multi-hop) | ✅ `dns.asyncresolver` | ✅ | ✅ | ❌ Reference only |
+| HTTP body fingerprint confirmation | ✅ Dual-stage validation | ✅ | ✅ | ❌ |
+| CVSS score per service | ✅ Embedded per finding | ❌ | ❌ | ❌ |
+| MX / NS record checks | ✅ | ❌ | ❌ | ❌ |
+| Continuous monitoring mode | ✅ | ❌ | ❌ via cron | ❌ |
+| Standalone HTML report for client delivery | ✅ `--html` | ❌ | ✅ SARIF | ❌ |
+| JSON structured output | ✅ | ✅ | ✅ | ❌ |
+| Configurable concurrency | ✅ `--concurrency N` | ✅ | ✅ | ❌ |
+| Python importable package | ✅ | ❌ Go | ❌ Go | ❌ |
+| Self-hosted / no cloud dependency | ✅ | ✅ | ✅ | ❌ Web app |
+
+- **CVSS scores per service** — each fingerprint carries a published CVSS base score (GitHub Pages 8.1, AWS S3 9.3, Azure CDN 8.5), giving clients an immediate risk priority without extra research.
+- **Dual-stage validation** — DNS orphan detection alone produces false positives; the HTTP body fingerprint confirmation step verifies whether the unclaimed resource is actually exploitable.
+- **MX and NS coverage** — email subdomain takeovers (via orphaned MX records) and DNS delegation hijacks (via abandoned NS records) are checked alongside CNAME takeovers.
+- **Client-ready output** — `--html` produces a standalone dark-theme report with CVSS-sorted findings, ready to hand to a client without post-processing.
+
+## Check Coverage
+
+| Check | Service / Attack Vector | CVSS | Standard |
+|-------|------------------------|------|----------|
+| GitHub Pages CNAME orphan | `github.io` NXDOMAIN / "There isn't a GitHub Pages site here." | 8.1 | OWASP OTG-CONFIG-002 |
+| AWS S3 bucket CNAME orphan | `s3.amazonaws.com` NXDOMAIN | 9.3 | MITRE ATT&CK T1584.001 |
+| Heroku CNAME orphan | `herokuapp.com` "No such app" fingerprint | 8.8 | OWASP OTG-CONFIG-002 |
+| Netlify CNAME orphan | `netlify.app` "Not Found" body fingerprint | 8.8 | OWASP OTG-CONFIG-002 |
+| Vercel CNAME orphan | `vercel.app` "The deployment could not be found" | 8.8 | OWASP OTG-CONFIG-002 |
+| Azure CDN / Blob orphan | `azurewebsites.net` / `blob.core.windows.net` NXDOMAIN | 8.5 | MITRE ATT&CK T1584.001 |
+| Fastly CNAME orphan | `fastly.net` "Fastly error: unknown domain" | 7.5 | OWASP OTG-CONFIG-002 |
+| Shopify CNAME orphan | `myshopify.com` "Sorry, this shop is currently unavailable" | 7.5 | OWASP OTG-CONFIG-002 |
+| Tumblr CNAME orphan | `tumblr.com` "There's nothing here" body fingerprint | 7.2 | OWASP OTG-CONFIG-002 |
+| Ghost / HelpScout / Zendesk orphan | Various SaaS "page not found" fingerprints | 7.0–7.5 | OWASP OTG-CONFIG-002 |
+| Orphaned NS delegation (DNS hijack) | NS record pointing to unregistered domain | 9.0 | MITRE ATT&CK T1584.002 |
+| Orphaned MX record (email takeover) | MX pointing to unclaimed mail host | 8.0 | MITRE ATT&CK T1584.001 |
+
+---
+
 ## Part of VampSecure Labs Toolkit
 
 `vamp-subdomain-takeover` is part of the **VampSecure Labs Security Research Toolkit** — a collection of professional-grade, self-hosted security assessment tools.
