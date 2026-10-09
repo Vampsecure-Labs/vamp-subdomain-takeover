@@ -1,6 +1,6 @@
 <!-- © VampSecure Studios — VampSecure Labs Security Research Division -->
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.2-crimson?style=flat-square" />
+  <img src="https://img.shields.io/badge/version-1.4-crimson?style=flat-square" />
   <img src="https://img.shields.io/badge/python-3.11+-blue?style=flat-square&logo=python&logoColor=white" />
   <img src="https://img.shields.io/badge/async-aiohttp%20%2B%20dnspython-teal?style=flat-square" />
   <img src="https://img.shields.io/badge/VampSecure_Labs-Security_Research-8b0000?style=flat-square" />
@@ -226,7 +226,8 @@ VULNERABLE — cdn.example.com (AWS S3, CVSS 9.3)
 
 | Version | Main changes |
 |---------|-------------|
-| v1.2 | Bilingual README (EN/ES) |
+| v1.4 | Bilingual README (EN/ES) |
+| v1.3 | Continuous monitoring mode |
 | v1.1 | Initial release |
 
 ---
@@ -451,7 +452,8 @@ VULNERABLE — cdn.example.com (AWS S3, CVSS 9.3)
 
 | Versión | Cambios principales |
 |---------|---------------------|
-| v1.2 | README bilingüe (EN/ES) |
+| v1.4 | README bilingüe (EN/ES) |
+| v1.3 | Modo de monitorización continua |
 | v1.1 | Versión inicial |
 
 ---
