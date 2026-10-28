@@ -106,7 +106,7 @@ __   ___   __  __ ___  ___ ___ ___ _   _ ___ ___ _      _   ___ ___
  \ V / _ \| |\/| |  _/\__ \ _| (__| |_| |   / _|| |__ / _ \| _ \__ \
   \_/_/ \_\_|  |_|_|  |___/___\___|\___/|_|_\___|____/_/ \_\___/___/
   by Antonio Hernandez "Belky" — VampSecure Studios
-  vamp-subdomain-takeover v1.1 · Subdomain Takeover Vulnerability Scanner
+  vamp-subdomain-takeover v1.3 · Subdomain Takeover Vulnerability Scanner
   ────────────────────────────────────────────────────────────────────────
   USO EXCLUSIVO EN AUDITORÍAS AUTORIZADAS · El uso no autorizado es ilegal
 """

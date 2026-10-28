@@ -1,6 +1,6 @@
 <!-- © VampSecure Studios — VampSecure Labs Security Research Division -->
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.4-crimson?style=flat-square" />
+  <img src="https://img.shields.io/badge/version-1.3-crimson?style=flat-square" />
   <img src="https://img.shields.io/badge/python-3.11+-blue?style=flat-square&logo=python&logoColor=white" />
   <img src="https://img.shields.io/badge/async-aiohttp%20%2B%20dnspython-teal?style=flat-square" />
   <img src="https://img.shields.io/badge/VampSecure_Labs-Security_Research-8b0000?style=flat-square" />
@@ -144,7 +144,7 @@ python vamp_subdomain_takeover.py -d example.com \
 
 ```
 $ python vamp_subdomain_takeover.py -d example.com -f subdomains.txt
-vamp-subdomain-takeover v1.2 — VampSecure Labs
+vamp-subdomain-takeover v1.3 — VampSecure Labs
 ──────────────────────────────────────────────────────────────────────
 [*] Checking 48 subdomains for example.com with concurrency 30...
 
@@ -370,7 +370,7 @@ python vamp_subdomain_takeover.py -d example.com \
 
 ```
 $ python vamp_subdomain_takeover.py -d example.com -f subdominios.txt
-vamp-subdomain-takeover v1.2 — VampSecure Labs
+vamp-subdomain-takeover v1.3 — VampSecure Labs
 ──────────────────────────────────────────────────────────────────────
 [*] Comprobando 48 subdominios de example.com con concurrencia 30...
 
